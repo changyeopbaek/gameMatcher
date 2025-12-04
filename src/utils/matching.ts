@@ -81,7 +81,12 @@ function generateSameGenderTeams(
 function generateAllTeams(
   malePlayers: Player[],
   femalePlayers: Player[],
-  fixedPartners: Array<{ player1Id: string; player2Id: string; type: TeamType }>
+  fixedPartners: Array<{
+    player1Id: string;
+    player2Id: string;
+    type: TeamType;
+  }>,
+  totalGames: number // 전체 경기 수를 받아서 혼복 팀 생성 수 결정
 ): Team[] {
   const teams: Team[] = [];
   const usedPlayers = new Set<string>();
@@ -151,31 +156,30 @@ function generateAllTeams(
   }
 
   // 혼복 팀
-  // 혼복 팀은 별도의 카운터를 사용하여 남복/여복 팀 생성과 독립적으로 관리
-  const xdTeamCount = new Map<string, number>();
-  const maxXdTeamsPerPlayer = 100; // 혼복 팀은 충분히 많이 생성 가능
+  // 혼복 팀 생성 제한: 전체 경기 수의 20%가 혼복 경기가 되도록
+  const targetXDGames = Math.floor(totalGames * 0.2); // 혼복 경기 목표 수 (20%)
+  const maxXDTeamsToGenerate = Math.max(targetXDGames * 3, 2); // 각 경기당 2팀 필요, 여유분 고려
+  const maxPossibleXDTeams = malePlayers.length * femalePlayers.length;
 
   console.log("혼복 팀 생성 시작:", {
     maleCount: malePlayers.length,
     femaleCount: femalePlayers.length,
+    totalGames,
+    targetXDGames,
+    maxPossible: maxPossibleXDTeams,
+    willGenerate: Math.min(maxXDTeamsToGenerate, maxPossibleXDTeams),
     usedPlayers: Array.from(usedPlayers),
   });
 
+  // 혼복 팀을 생성하되, 제한 개수만큼만 생성 (가능한 조합 수를 초과하지 않도록)
+  let xdTeamsGenerated = 0;
+  const actualMaxXDTeams = Math.min(maxXDTeamsToGenerate, maxPossibleXDTeams);
+
   for (const male of malePlayers) {
-    // 고정 파트너로 완전히 고정된 경우만 제외 (혼복 고정 파트너가 아닌 경우)
-    // 하지만 혼복 팀 생성 시에는 usedPlayers 체크를 하지 않음 (다양한 조합을 위해)
-    const xdCount1 = xdTeamCount.get(male.id) || 0;
-    if (xdCount1 >= maxXdTeamsPerPlayer) {
-      console.log(`남자 ${male.id}는 혼복 팀 수 제한에 걸림: ${xdCount1}`);
-      continue;
-    }
+    if (xdTeamsGenerated >= actualMaxXDTeams) break;
 
     for (const female of femalePlayers) {
-      // 고정 파트너로 완전히 고정된 경우만 제외 (혼복 고정 파트너가 아닌 경우)
-      const xdCount2 = xdTeamCount.get(female.id) || 0;
-      if (xdCount2 >= maxXdTeamsPerPlayer) {
-        continue;
-      }
+      if (xdTeamsGenerated >= actualMaxXDTeams) break;
 
       // 고정 파트너로 이미 같은 조합이 있으면 스킵 (중복 방지)
       const isFixedPair = fixedPartners.some(
@@ -197,21 +201,27 @@ function generateAllTeams(
         type: "XD" as TeamType,
       };
       teams.push(xdTeam);
-      xdTeamCount.set(male.id, xdCount1 + 1);
-      xdTeamCount.set(female.id, xdCount2 + 1);
-      console.log(`혼복 팀 생성: ${male.id} - ${female.id}`);
+      xdTeamsGenerated++;
+      console.log(
+        `혼복 팀 생성 (${xdTeamsGenerated}/${actualMaxXDTeams}): ${male.id} - ${female.id}`
+      );
     }
   }
 
   console.log("혼복 팀 생성 완료:", {
-    xdTeamCount: teams.filter((t) => t.type === "XD").length,
+    generated: xdTeamsGenerated,
+    target: actualMaxXDTeams,
+    targetGames: targetXDGames,
   });
 
   return teams;
 }
 
 // 팀 생성 메인 함수
-export function generateTeams(input: MatchingInput): Team[] {
+export function generateTeams(
+  input: MatchingInput,
+  totalGames: number
+): Team[] {
   const { malePlayers, femalePlayers, options, fixedPartners = [] } = input;
 
   // 디버깅: 5가지 체크 포인트
@@ -238,7 +248,8 @@ export function generateTeams(input: MatchingInput): Team[] {
     const allTeams = generateAllTeams(
       malePlayers,
       femalePlayers,
-      fixedPartners
+      fixedPartners,
+      totalGames
     );
     const xdTeams = allTeams.filter((t) => t.type === "XD");
     console.log("팀 생성 결과 (혼복 허용):", {
@@ -259,19 +270,22 @@ export function scheduleMatches(
   teams: Team[],
   players: Player[],
   courts: number,
-  totalGames: number
+  totalGames: number,
+  targetXDGames: number = 0 // 혼복 경기 목표 수
 ): MatchingResult {
   const totalRounds = Math.ceil(totalGames / courts);
   const matches: MatchDetail[] = [];
   const playerGameCount: Record<string, number> = {};
   const teamUsageCount: Record<string, number> = {};
   const matchHistory: Set<string> = new Set(); // 같은 매치 반복 방지
+  let xdGamesCreated = 0; // 생성된 혼복 경기 수 추적
 
   // 디버깅: schedule 단계에서 XD 팀 확인
   const xdTeams = teams.filter((t) => t.type === "XD");
   console.log("=== 매칭 스케줄링 디버깅 ===");
   console.log("전체 팀 수:", teams.length);
   console.log("XD 팀 수:", xdTeams.length);
+  console.log("XD 경기 목표:", targetXDGames);
   console.log(
     "XD 팀 목록:",
     xdTeams.map((t) => t.id)
@@ -299,6 +313,10 @@ export function scheduleMatches(
       // 현재 최대 게임 수 계산
       const gameCounts = Object.values(playerGameCount);
       const maxGames = gameCounts.length > 0 ? Math.max(...gameCounts) : 0;
+
+      // 현재 남은 경기 수와 XD 부족분 계산 (각 코트마다 재계산)
+      const remainingGames = totalGames - matches.length;
+      const xdDeficit = targetXDGames - xdGamesCreated;
 
       // 후보 팀 목록: 출전 횟수가 적은 순으로 정렬
       let candidateTeams = teams.filter((team) => {
@@ -331,8 +349,9 @@ export function scheduleMatches(
         }
       }
 
+      // 각 코트마다 재정렬 (남은 경기와 XD 부족분을 반영)
       candidateTeams = candidateTeams.sort((a, b) => {
-        // 게임 수가 최우선이지만, 게임 수가 같을 때는 점수 분산을 고려
+        // 게임 수가 최우선이지만, 게임 수가 같을 때는 혼복 목표와 점수 분산을 고려
         const avgA =
           ((playerGameCount[a.player1Id] || 0) +
             (playerGameCount[a.player2Id] || 0)) /
@@ -342,8 +361,36 @@ export function scheduleMatches(
             (playerGameCount[b.player2Id] || 0)) /
           2;
 
-        // 게임 수가 최우선
-        return avgA - avgB;
+        // 1순위: 게임 수 (가장 적은 팀 우선)
+        if (avgA !== avgB) {
+          return avgA - avgB;
+        }
+
+        // 2순위: 혼복 경기 목표 고려 (게임 수가 같을 때)
+        if (targetXDGames > 0) {
+          // 혼복 경기가 부족하면 XD 팀 우선 (하지만 너무 강하지 않게)
+          if (xdDeficit > 0) {
+            // 남은 경기가 충분하고 XD 부족분이 클 때만 XD 우선
+            // 라운드 첫 코트이거나 남은 코트가 여러 개일 때는 신중하게
+            const courtsLeftInRound = courts - (court % courts);
+            const shouldPrioritizeXD =
+              xdDeficit >= Math.max(remainingGames * 0.25, 2) &&
+              (courtsLeftInRound === courts || remainingGames > courts * 2);
+
+            if (shouldPrioritizeXD) {
+              if (a.type === "XD" && b.type !== "XD") return -1;
+              if (a.type !== "XD" && b.type === "XD") return 1;
+            }
+          }
+          // 혼복 경기가 충분하면 MD/WD 팀 우선
+          else if (xdDeficit <= 0) {
+            if (a.type === "XD" && b.type !== "XD") return 1;
+            if (a.type !== "XD" && b.type === "XD") return -1;
+          }
+        }
+
+        // 3순위: 팀 타입 (안정성을 위해)
+        return a.type.localeCompare(b.type);
       });
 
       if (candidateTeams.length === 0) {
@@ -353,162 +400,162 @@ export function scheduleMatches(
         break;
       }
 
-      // 첫 번째 팀 선택 (매칭 가능한 팀 중에서 선택)
-      // 같은 타입의 상대 팀이 있는 팀만 선택
-      let teamA: Team | undefined;
-      for (const candidate of candidateTeams) {
-        const potentialOpponents = candidateTeams.filter(
-          (team) =>
-            team.type === candidate.type &&
-            team.id !== candidate.id &&
-            team.player1Id !== candidate.player1Id &&
-            team.player1Id !== candidate.player2Id &&
-            team.player2Id !== candidate.player1Id &&
-            team.player2Id !== candidate.player2Id
-        );
-        if (potentialOpponents.length > 0) {
-          teamA = candidate;
-          console.log(
-            `라운드 ${round + 1}, 코트 ${court + 1}: teamA 선택 - ${
-              teamA.type
-            } (${teamA.id}), 가능한 상대: ${potentialOpponents.length}개`
-          );
-          break;
-        }
+      const courtsLeftInRound = courts - court;
+
+      // ============================================
+      // 새로운 접근: 모든 가능한 매치 조합을 평가하여 최적의 매치 선택
+      // 점수 밸런스를 우선적으로 고려하면서 게임 수 균등도 유지
+      // ============================================
+      interface MatchCandidate {
+        teamA: Team;
+        teamB: Team;
+        avgGameCount: number; // 두 팀의 평균 게임 수
+        gameCountDiff: number; // 두 팀 간 게임 수 차이
+        scoreDiff: number; // 급수 점수 차이
+        canFillNextCourt: boolean; // 이 매치 후 다음 코트 채울 수 있는지
       }
 
-      if (!teamA) {
-        console.warn(
-          `라운드 ${round + 1}, 코트 ${
-            court + 1
-          }: 매칭 가능한 teamA를 찾지 못함`
-        );
-        continue;
-      }
+      const allPossibleMatches: MatchCandidate[] = [];
 
-      let teamB: Team | undefined;
-      let attempts = 0;
-      const maxAttempts = Math.min(50, candidateTeams.length);
+      // 모든 가능한 매치 조합 생성
+      for (let i = 0; i < candidateTeams.length; i++) {
+        const candidate = candidateTeams[i];
+        for (let j = i + 1; j < candidateTeams.length; j++) {
+          const opponent = candidateTeams[j];
 
-      // 두 번째 팀 선택 (같은 타입, 겹치지 않고, 게임 수 균등성이 최우선, 그 다음 점수 밸런스)
-      const teamAGameCount =
-        ((playerGameCount[teamA.player1Id] || 0) +
-          (playerGameCount[teamA.player2Id] || 0)) /
-        2;
+          // 같은 타입만 매칭 가능
+          if (candidate.type !== opponent.type) continue;
 
-      const compatibleTeams = candidateTeams
-        .slice(attempts + 1)
-        .filter((team) => {
-          // 같은 타입의 팀끼리만 매칭 (MD vs MD, WD vs WD, XD vs XD)
-          return (
-            team.type === teamA!.type &&
-            team.player1Id !== teamA!.player1Id &&
-            team.player1Id !== teamA!.player2Id &&
-            team.player2Id !== teamA!.player1Id &&
-            team.player2Id !== teamA!.player2Id
-          );
-        });
+          // 선수 겹침 체크
+          if (
+            candidate.player1Id === opponent.player1Id ||
+            candidate.player1Id === opponent.player2Id ||
+            candidate.player2Id === opponent.player1Id ||
+            candidate.player2Id === opponent.player2Id
+          )
+            continue;
 
-      console.log(
-        `라운드 ${round + 1}, 코트 ${court + 1}: compatibleTeams 수 - ${
-          compatibleTeams.length
-        }`
-      );
-
-      if (compatibleTeams.length === 0) {
-        console.warn(
-          `라운드 ${round + 1}, 코트 ${
-            court + 1
-          }: compatibleTeams가 없어서 경기 생성 불가`
-        );
-      }
-
-      const sortedCompatibleTeams = compatibleTeams
-        .map((team) => {
-          const teamBGameCount =
-            ((playerGameCount[team.player1Id] || 0) +
-              (playerGameCount[team.player2Id] || 0)) /
+          // 게임 수 계산
+          const teamAGameCount =
+            ((playerGameCount[candidate.player1Id] || 0) +
+              (playerGameCount[candidate.player2Id] || 0)) /
             2;
-          return {
-            team,
-            gameCountDiff: Math.abs(teamAGameCount - teamBGameCount), // 게임 수 차이
-            scoreDiff: getMatchScoreDifference(teamA!, team, players), // 점수 차이
-            avgGameCount: teamBGameCount,
-          };
-        })
-        .sort((a, b) => {
-          // 1순위: 게임 수 차이 (가장 작은 차이가 최우선)
-          const gameDiffA = a.gameCountDiff;
-          const gameDiffB = b.gameCountDiff;
+          const teamBGameCount =
+            ((playerGameCount[opponent.player1Id] || 0) +
+              (playerGameCount[opponent.player2Id] || 0)) /
+            2;
+          const avgGameCount = (teamAGameCount + teamBGameCount) / 2;
+          const gameCountDiff = Math.abs(teamAGameCount - teamBGameCount);
 
-          // 게임 수 차이가 0 또는 1 이내일 때는 점수 밸런스를 우선 고려
-          // 게임 수가 비슷하면 등급 점수 차이를 더 중요하게 고려
-          if (gameDiffA <= 1 && gameDiffB <= 1) {
-            // 둘 다 게임 수 차이가 1 이내면 점수 차이를 우선 고려
-            if (a.scoreDiff !== b.scoreDiff) {
-              return a.scoreDiff - b.scoreDiff;
-            }
-            // 점수 차이도 같으면 게임 수 차이로 결정
-            if (gameDiffA !== gameDiffB) {
-              return gameDiffA - gameDiffB;
-            }
-          } else if (gameDiffA <= 1) {
-            // A만 게임 수 차이가 1 이내면 A를 우선 (점수 밸런스를 고려할 수 있음)
-            return -1;
-          } else if (gameDiffB <= 1) {
-            // B만 게임 수 차이가 1 이내면 B를 우선
-            return 1;
-          } else {
-            // 둘 다 게임 수 차이가 1보다 크면 게임 수 차이를 우선
-            if (gameDiffA !== gameDiffB) {
-              return gameDiffA - gameDiffB;
-            }
-            // 게임 수 차이가 같으면 점수 차이로 결정
-            if (a.scoreDiff !== b.scoreDiff) {
-              return a.scoreDiff - b.scoreDiff;
-            }
-          }
-          // 3순위: 출전 횟수가 적은 순
-          return a.avgGameCount - b.avgGameCount;
-        });
+          // 점수 차이 계산
+          const scoreDiff = getMatchScoreDifference(
+            candidate,
+            opponent,
+            players
+          );
 
-      while (
-        attempts < maxAttempts &&
-        !teamB &&
-        sortedCompatibleTeams.length > 0
-      ) {
-        const candidateB = sortedCompatibleTeams[0]?.team;
+          // 다음 코트 채울 수 있는지 확인
+          let canFillNextCourt = true;
+          if (courtsLeftInRound > 1) {
+            const usedPlayers = new Set([
+              candidate.player1Id,
+              candidate.player2Id,
+              opponent.player1Id,
+              opponent.player2Id,
+            ]);
 
-        if (candidateB) {
-          // 같은 매치 반복 체크 (최대 2회까지 허용)
-          const matchKey = [teamA.id, candidateB.id].sort().join(" vs ");
-          const matchCount = Array.from(matchHistory).filter(
-            (m) => m === matchKey
-          ).length;
-
-          if (matchCount < 2) {
-            teamB = candidateB;
-            console.log(
-              `라운드 ${round + 1}, 코트 ${court + 1}: teamB 선택 - ${
-                candidateB.type
-              } (${candidateB.id})`
+            const remainingTeams = candidateTeams.filter(
+              (team) =>
+                !usedPlayers.has(team.player1Id) &&
+                !usedPlayers.has(team.player2Id)
             );
-          } else {
-            // 다음 후보 팀으로 시도
-            sortedCompatibleTeams.shift();
-            if (sortedCompatibleTeams.length === 0) {
-              attempts++;
-              if (attempts < candidateTeams.length - 1) {
-                teamA = candidateTeams[attempts];
+
+            canFillNextCourt = false;
+            for (const remainingTeam of remainingTeams) {
+              const remainingOpponents = remainingTeams.filter(
+                (team) =>
+                  team.type === remainingTeam.type &&
+                  team.id !== remainingTeam.id &&
+                  team.player1Id !== remainingTeam.player1Id &&
+                  team.player1Id !== remainingTeam.player2Id &&
+                  team.player2Id !== remainingTeam.player1Id &&
+                  team.player2Id !== remainingTeam.player2Id
+              );
+              if (remainingOpponents.length > 0) {
+                canFillNextCourt = true;
+                break;
               }
             }
           }
-        } else {
-          attempts++;
-          if (attempts < candidateTeams.length - 1) {
-            teamA = candidateTeams[attempts];
-          }
+
+          // 같은 매치 반복 체크
+          const matchKey = [candidate.id, opponent.id].sort().join(" vs ");
+          const matchCount = Array.from(matchHistory).filter(
+            (m) => m === matchKey
+          ).length;
+          if (matchCount >= 2) continue; // 이미 2번 매칭된 조합은 제외
+
+          allPossibleMatches.push({
+            teamA: candidate,
+            teamB: opponent,
+            avgGameCount,
+            gameCountDiff,
+            scoreDiff,
+            canFillNextCourt,
+          });
         }
+      }
+
+      // 매치 정렬:
+      // 1순위: 다음 코트 채울 수 있는지 (채울 수 있는 것 우선)
+      // 2순위: 평균 게임 수 (적은 순)
+      // 3순위: 점수 차이 (작은 순) - 점수 밸런스!
+      // 4순위: 게임 수 차이 (작은 순)
+      allPossibleMatches.sort((a, b) => {
+        // 1순위: 다음 코트 채울 수 있는 매치 우선
+        if (a.canFillNextCourt !== b.canFillNextCourt) {
+          return a.canFillNextCourt ? -1 : 1;
+        }
+
+        // 2순위: 평균 게임 수 (게임 수가 적은 팀들의 매치 우선)
+        if (a.avgGameCount !== b.avgGameCount) {
+          return a.avgGameCount - b.avgGameCount;
+        }
+
+        // 3순위: 점수 차이 (급수 밸런스 - 작을수록 좋음)
+        if (a.scoreDiff !== b.scoreDiff) {
+          return a.scoreDiff - b.scoreDiff;
+        }
+
+        // 4순위: 게임 수 차이
+        return a.gameCountDiff - b.gameCountDiff;
+      });
+
+      let teamA: Team | undefined;
+      let teamB: Team | undefined;
+
+      if (allPossibleMatches.length > 0) {
+        const bestMatch = allPossibleMatches[0];
+        teamA = bestMatch.teamA;
+        teamB = bestMatch.teamB;
+        console.log(
+          `라운드 ${round + 1}, 코트 ${court + 1}: 최적 매치 선택 - ${
+            teamA.type
+          } (점수차: ${bestMatch.scoreDiff}, 게임수차: ${
+            bestMatch.gameCountDiff
+          })`
+        );
+      }
+
+      if (!teamA || !teamB) {
+        console.warn(
+          `라운드 ${round + 1}, 코트 ${
+            court + 1
+          }: 가능한 매치를 찾지 못함 (후보 매치 수: ${
+            allPossibleMatches.length
+          })`
+        );
+        continue;
       }
 
       if (!teamB) {
@@ -534,6 +581,11 @@ export function scheduleMatches(
         ],
       };
 
+      // 혼복 경기 카운트
+      if (teamA.type === "XD") {
+        xdGamesCreated++;
+      }
+
       roundMatches.push(match);
       const matchKey = [teamA.id, teamB.id].sort().join(" vs ");
       matchHistory.add(matchKey);
@@ -555,6 +607,11 @@ export function scheduleMatches(
 
     matches.push(...roundMatches);
   }
+
+  console.log("=== 매칭 스케줄링 완료 ===");
+  console.log("생성된 XD 경기:", xdGamesCreated);
+  console.log("목표 XD 경기:", targetXDGames);
+  console.log("전체 경기:", matches.length);
 
   return {
     matches,
@@ -580,10 +637,16 @@ export function generateMatching(input: MatchingInput): MatchingResult {
     시간당게임: gamesPerHour,
     총게임: totalGames,
     혼복허용: input.options.allowMixed,
+    혼복목표: input.options.allowMixed
+      ? `${Math.floor(totalGames * 0.2)}경기 (20%)`
+      : "N/A",
   });
 
-  // 팀 생성
-  const teams = generateTeams(input);
+  // 팀 생성 (총 경기 수를 전달하여 혼복 팀 생성 수 결정)
+  const teams = generateTeams(input, totalGames);
+  const targetXDGames = input.options.allowMixed
+    ? Math.floor(totalGames * 0.2)
+    : 0;
 
   console.log("생성된 팀 정보:", {
     전체팀수: teams.length,
@@ -592,8 +655,14 @@ export function generateMatching(input: MatchingInput): MatchingResult {
     혼복: teams.filter((t) => t.type === "XD").length,
   });
 
-  // 매칭 스케줄링
-  const result = scheduleMatches(teams, allPlayers, courts, totalGames);
+  // 매칭 스케줄링 (혼복 경기 목표 수 전달)
+  const result = scheduleMatches(
+    teams,
+    allPlayers,
+    courts,
+    totalGames,
+    targetXDGames
+  );
 
   console.log("매칭 결과:", {
     생성된경기수: result.matches.length,
