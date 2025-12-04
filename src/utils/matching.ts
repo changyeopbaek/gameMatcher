@@ -151,26 +151,61 @@ function generateAllTeams(
   }
 
   // 혼복 팀
+  // 혼복 팀은 별도의 카운터를 사용하여 남복/여복 팀 생성과 독립적으로 관리
+  const xdTeamCount = new Map<string, number>();
+  const maxXdTeamsPerPlayer = 100; // 혼복 팀은 충분히 많이 생성 가능
+
+  console.log("혼복 팀 생성 시작:", {
+    maleCount: malePlayers.length,
+    femaleCount: femalePlayers.length,
+    usedPlayers: Array.from(usedPlayers),
+  });
+
   for (const male of malePlayers) {
-    if (usedPlayers.has(male.id)) continue;
-    const count1 = playerTeamCount.get(male.id) || 0;
-    if (count1 >= maxTeamsPerPlayer) continue;
+    // 고정 파트너로 완전히 고정된 경우만 제외 (혼복 고정 파트너가 아닌 경우)
+    // 하지만 혼복 팀 생성 시에는 usedPlayers 체크를 하지 않음 (다양한 조합을 위해)
+    const xdCount1 = xdTeamCount.get(male.id) || 0;
+    if (xdCount1 >= maxXdTeamsPerPlayer) {
+      console.log(`남자 ${male.id}는 혼복 팀 수 제한에 걸림: ${xdCount1}`);
+      continue;
+    }
 
     for (const female of femalePlayers) {
-      if (usedPlayers.has(female.id)) continue;
-      const count2 = playerTeamCount.get(female.id) || 0;
-      if (count2 >= maxTeamsPerPlayer) continue;
+      // 고정 파트너로 완전히 고정된 경우만 제외 (혼복 고정 파트너가 아닌 경우)
+      const xdCount2 = xdTeamCount.get(female.id) || 0;
+      if (xdCount2 >= maxXdTeamsPerPlayer) {
+        continue;
+      }
 
-      teams.push({
+      // 고정 파트너로 이미 같은 조합이 있으면 스킵 (중복 방지)
+      const isFixedPair = fixedPartners.some(
+        (p) =>
+          ((p.player1Id === male.id && p.player2Id === female.id) ||
+            (p.player1Id === female.id && p.player2Id === male.id)) &&
+          p.type === "XD"
+      );
+      if (isFixedPair) {
+        console.log(`고정 파트너로 이미 존재: ${male.id} - ${female.id}`);
+        continue;
+      }
+
+      // 혼복 팀 생성
+      const xdTeam = {
         id: generateTeamId(male.id, female.id),
         player1Id: male.id,
         player2Id: female.id,
-        type: "XD",
-      });
-      playerTeamCount.set(male.id, count1 + 1);
-      playerTeamCount.set(female.id, count2 + 1);
+        type: "XD" as TeamType,
+      };
+      teams.push(xdTeam);
+      xdTeamCount.set(male.id, xdCount1 + 1);
+      xdTeamCount.set(female.id, xdCount2 + 1);
+      console.log(`혼복 팀 생성: ${male.id} - ${female.id}`);
     }
   }
+
+  console.log("혼복 팀 생성 완료:", {
+    xdTeamCount: teams.filter((t) => t.type === "XD").length,
+  });
 
   return teams;
 }
@@ -179,14 +214,43 @@ function generateAllTeams(
 export function generateTeams(input: MatchingInput): Team[] {
   const { malePlayers, femalePlayers, options, fixedPartners = [] } = input;
 
+  // 디버깅: 5가지 체크 포인트
+  console.log("=== 팀 생성 디버깅 ===");
+  console.log("1. TeamType에 XD가 있는지:", ("XD" as TeamType) === "XD");
+  console.log("2. options.allowMixed:", options.allowMixed);
+  console.log("3. malePlayers.length:", malePlayers.length);
+  console.log("4. femalePlayers.length:", femalePlayers.length);
+  console.log("5. fixedPartners:", fixedPartners);
+
   if (!options.allowMixed) {
     // 남복 & 여복만
     const mdTeams = generateSameGenderTeams(malePlayers, "MD", fixedPartners);
     const wdTeams = generateSameGenderTeams(femalePlayers, "WD", fixedPartners);
-    return [...mdTeams, ...wdTeams];
+    const allTeams = [...mdTeams, ...wdTeams];
+    console.log("팀 생성 결과 (혼복 미허용):", {
+      MD: mdTeams.length,
+      WD: wdTeams.length,
+      total: allTeams.length,
+    });
+    return allTeams;
   } else {
     // 남복 & 여복 & 혼복 모두
-    return generateAllTeams(malePlayers, femalePlayers, fixedPartners);
+    const allTeams = generateAllTeams(
+      malePlayers,
+      femalePlayers,
+      fixedPartners
+    );
+    const xdTeams = allTeams.filter((t) => t.type === "XD");
+    console.log("팀 생성 결과 (혼복 허용):", {
+      MD: allTeams.filter((t) => t.type === "MD").length,
+      WD: allTeams.filter((t) => t.type === "WD").length,
+      XD: xdTeams.length,
+      total: allTeams.length,
+    });
+    if (xdTeams.length === 0) {
+      console.warn("⚠️ 혼복 팀이 생성되지 않았습니다!");
+    }
+    return allTeams;
   }
 }
 
@@ -202,6 +266,16 @@ export function scheduleMatches(
   const playerGameCount: Record<string, number> = {};
   const teamUsageCount: Record<string, number> = {};
   const matchHistory: Set<string> = new Set(); // 같은 매치 반복 방지
+
+  // 디버깅: schedule 단계에서 XD 팀 확인
+  const xdTeams = teams.filter((t) => t.type === "XD");
+  console.log("=== 매칭 스케줄링 디버깅 ===");
+  console.log("전체 팀 수:", teams.length);
+  console.log("XD 팀 수:", xdTeams.length);
+  console.log(
+    "XD 팀 목록:",
+    xdTeams.map((t) => t.id)
+  );
 
   // 초기화
   players.forEach((p) => {
@@ -227,46 +301,91 @@ export function scheduleMatches(
       const maxGames = gameCounts.length > 0 ? Math.max(...gameCounts) : 0;
 
       // 후보 팀 목록: 출전 횟수가 적은 순으로 정렬
-      let candidateTeams = teams
-        .filter((team) => {
-          // 이미 이 라운드에서 사용된 선수는 제외
-          if (
-            usedInRound.has(team.player1Id) ||
-            usedInRound.has(team.player2Id)
-          ) {
-            return false;
-          }
+      let candidateTeams = teams.filter((team) => {
+        // 이미 이 라운드에서 사용된 선수는 제외
+        if (
+          usedInRound.has(team.player1Id) ||
+          usedInRound.has(team.player2Id)
+        ) {
+          return false;
+        }
 
-          // 게임 수 균등성 체크: 최대 게임 수보다 1게임 이상 많은 선수가 포함된 팀은 제외
-          const p1Count = playerGameCount[team.player1Id] || 0;
-          const p2Count = playerGameCount[team.player2Id] || 0;
+        // 게임 수 균등성 체크: 최대 게임 수보다 1게임 이상 많은 선수가 포함된 팀은 제외
+        const p1Count = playerGameCount[team.player1Id] || 0;
+        const p2Count = playerGameCount[team.player2Id] || 0;
 
-          // 최대 게임 수와의 차이가 1을 넘지 않도록 제한
-          if (maxGames > 0 && (p1Count > maxGames || p2Count > maxGames)) {
-            return false;
-          }
+        // 최대 게임 수와의 차이가 1을 넘지 않도록 제한
+        if (maxGames > 0 && (p1Count > maxGames || p2Count > maxGames)) {
+          return false;
+        }
 
-          return true;
-        })
-        .sort((a, b) => {
-          // 게임 수가 최우선이지만, 게임 수가 같을 때는 점수 분산을 고려
-          const avgA =
-            ((playerGameCount[a.player1Id] || 0) +
-              (playerGameCount[a.player2Id] || 0)) /
-            2;
-          const avgB =
-            ((playerGameCount[b.player1Id] || 0) +
-              (playerGameCount[b.player2Id] || 0)) /
-            2;
+        return true;
+      });
 
-          // 게임 수가 최우선
-          return avgA - avgB;
-        });
+      // 디버깅: XD 팀 필터링 확인
+      if (round === 0 && court === 0) {
+        const xdCandidates = candidateTeams.filter((t) => t.type === "XD");
+        console.log("후보 팀 중 XD 팀 수:", xdCandidates.length);
+        if (xdCandidates.length === 0 && xdTeams.length > 0) {
+          console.warn("⚠️ XD 팀이 후보에서 필터링되었습니다!");
+        }
+      }
 
-      if (candidateTeams.length === 0) break;
+      candidateTeams = candidateTeams.sort((a, b) => {
+        // 게임 수가 최우선이지만, 게임 수가 같을 때는 점수 분산을 고려
+        const avgA =
+          ((playerGameCount[a.player1Id] || 0) +
+            (playerGameCount[a.player2Id] || 0)) /
+          2;
+        const avgB =
+          ((playerGameCount[b.player1Id] || 0) +
+            (playerGameCount[b.player2Id] || 0)) /
+          2;
 
-      // 첫 번째 팀 선택
-      let teamA = candidateTeams[0];
+        // 게임 수가 최우선
+        return avgA - avgB;
+      });
+
+      if (candidateTeams.length === 0) {
+        console.log(
+          `라운드 ${round + 1}, 코트 ${court + 1}: 후보 팀이 없어서 break`
+        );
+        break;
+      }
+
+      // 첫 번째 팀 선택 (매칭 가능한 팀 중에서 선택)
+      // 같은 타입의 상대 팀이 있는 팀만 선택
+      let teamA: Team | undefined;
+      for (const candidate of candidateTeams) {
+        const potentialOpponents = candidateTeams.filter(
+          (team) =>
+            team.type === candidate.type &&
+            team.id !== candidate.id &&
+            team.player1Id !== candidate.player1Id &&
+            team.player1Id !== candidate.player2Id &&
+            team.player2Id !== candidate.player1Id &&
+            team.player2Id !== candidate.player2Id
+        );
+        if (potentialOpponents.length > 0) {
+          teamA = candidate;
+          console.log(
+            `라운드 ${round + 1}, 코트 ${court + 1}: teamA 선택 - ${
+              teamA.type
+            } (${teamA.id}), 가능한 상대: ${potentialOpponents.length}개`
+          );
+          break;
+        }
+      }
+
+      if (!teamA) {
+        console.warn(
+          `라운드 ${round + 1}, 코트 ${
+            court + 1
+          }: 매칭 가능한 teamA를 찾지 못함`
+        );
+        continue;
+      }
+
       let teamB: Team | undefined;
       let attempts = 0;
       const maxAttempts = Math.min(50, candidateTeams.length);
@@ -282,13 +401,29 @@ export function scheduleMatches(
         .filter((team) => {
           // 같은 타입의 팀끼리만 매칭 (MD vs MD, WD vs WD, XD vs XD)
           return (
-            team.type === teamA.type &&
-            team.player1Id !== teamA.player1Id &&
-            team.player1Id !== teamA.player2Id &&
-            team.player2Id !== teamA.player1Id &&
-            team.player2Id !== teamA.player2Id
+            team.type === teamA!.type &&
+            team.player1Id !== teamA!.player1Id &&
+            team.player1Id !== teamA!.player2Id &&
+            team.player2Id !== teamA!.player1Id &&
+            team.player2Id !== teamA!.player2Id
           );
-        })
+        });
+
+      console.log(
+        `라운드 ${round + 1}, 코트 ${court + 1}: compatibleTeams 수 - ${
+          compatibleTeams.length
+        }`
+      );
+
+      if (compatibleTeams.length === 0) {
+        console.warn(
+          `라운드 ${round + 1}, 코트 ${
+            court + 1
+          }: compatibleTeams가 없어서 경기 생성 불가`
+        );
+      }
+
+      const sortedCompatibleTeams = compatibleTeams
         .map((team) => {
           const teamBGameCount =
             ((playerGameCount[team.player1Id] || 0) +
@@ -297,7 +432,7 @@ export function scheduleMatches(
           return {
             team,
             gameCountDiff: Math.abs(teamAGameCount - teamBGameCount), // 게임 수 차이
-            scoreDiff: getMatchScoreDifference(teamA, team, players), // 점수 차이
+            scoreDiff: getMatchScoreDifference(teamA!, team, players), // 점수 차이
             avgGameCount: teamBGameCount,
           };
         })
@@ -337,8 +472,12 @@ export function scheduleMatches(
           return a.avgGameCount - b.avgGameCount;
         });
 
-      while (attempts < maxAttempts && !teamB && compatibleTeams.length > 0) {
-        const candidateB = compatibleTeams[0]?.team;
+      while (
+        attempts < maxAttempts &&
+        !teamB &&
+        sortedCompatibleTeams.length > 0
+      ) {
+        const candidateB = sortedCompatibleTeams[0]?.team;
 
         if (candidateB) {
           // 같은 매치 반복 체크 (최대 2회까지 허용)
@@ -349,10 +488,15 @@ export function scheduleMatches(
 
           if (matchCount < 2) {
             teamB = candidateB;
+            console.log(
+              `라운드 ${round + 1}, 코트 ${court + 1}: teamB 선택 - ${
+                candidateB.type
+              } (${candidateB.id})`
+            );
           } else {
             // 다음 후보 팀으로 시도
-            compatibleTeams.shift();
-            if (compatibleTeams.length === 0) {
+            sortedCompatibleTeams.shift();
+            if (sortedCompatibleTeams.length === 0) {
               attempts++;
               if (attempts < candidateTeams.length - 1) {
                 teamA = candidateTeams[attempts];
@@ -367,7 +511,12 @@ export function scheduleMatches(
         }
       }
 
-      if (!teamB) continue;
+      if (!teamB) {
+        console.warn(
+          `라운드 ${round + 1}, 코트 ${court + 1}: teamB를 찾지 못해서 continue`
+        );
+        continue;
+      }
 
       // 매치 생성
       const match: MatchDetail = {
@@ -422,11 +571,34 @@ export function generateMatching(input: MatchingInput): MatchingResult {
   const totalGames = courts * hours * gamesPerHour;
   const allPlayers = [...malePlayers, ...femalePlayers];
 
+  console.log("=== 매칭 생성 시작 ===");
+  console.log("입력 정보:", {
+    남자수: malePlayers.length,
+    여자수: femalePlayers.length,
+    코트: courts,
+    시간: hours,
+    시간당게임: gamesPerHour,
+    총게임: totalGames,
+    혼복허용: input.options.allowMixed,
+  });
+
   // 팀 생성
   const teams = generateTeams(input);
 
+  console.log("생성된 팀 정보:", {
+    전체팀수: teams.length,
+    남복: teams.filter((t) => t.type === "MD").length,
+    여복: teams.filter((t) => t.type === "WD").length,
+    혼복: teams.filter((t) => t.type === "XD").length,
+  });
+
   // 매칭 스케줄링
   const result = scheduleMatches(teams, allPlayers, courts, totalGames);
+
+  console.log("매칭 결과:", {
+    생성된경기수: result.matches.length,
+    요청한경기수: totalGames,
+  });
 
   return result;
 }
