@@ -159,11 +159,26 @@ function generateAllTeams(
   // 혼복 팀 생성 제한: 전체 경기 수의 20%가 혼복 경기가 되도록
   const targetXDGames = Math.floor(totalGames * 0.2); // 혼복 경기 목표 수 (20%)
   const maxXDTeamsToGenerate = Math.max(targetXDGames * 3, 2); // 각 경기당 2팀 필요, 여유분 고려
-  const maxPossibleXDTeams = malePlayers.length * femalePlayers.length;
+
+  // XD(혼복) 고정 파트너만 제외 - MD/WD 고정 파트너는 혼복에 참여 가능
+  const xdFixedPlayers = new Set<string>();
+  for (const pair of fixedPartners) {
+    if (pair.type === "XD") {
+      xdFixedPlayers.add(pair.player1Id);
+      xdFixedPlayers.add(pair.player2Id);
+    }
+  }
+
+  // XD 고정 파트너가 아닌 선수들만 필터링 (MD/WD 고정 파트너도 혼복 가능)
+  const availableMales = malePlayers.filter((p) => !xdFixedPlayers.has(p.id));
+  const availableFemales = femalePlayers.filter(
+    (p) => !xdFixedPlayers.has(p.id)
+  );
+  const maxPossibleXDTeams = availableMales.length * availableFemales.length;
 
   console.log("혼복 팀 생성 시작:", {
-    maleCount: malePlayers.length,
-    femaleCount: femalePlayers.length,
+    maleCount: availableMales.length,
+    femaleCount: availableFemales.length,
     totalGames,
     targetXDGames,
     maxPossible: maxPossibleXDTeams,
@@ -171,47 +186,91 @@ function generateAllTeams(
     usedPlayers: Array.from(usedPlayers),
   });
 
-  // 혼복 팀을 생성하되, 제한 개수만큼만 생성 (가능한 조합 수를 초과하지 않도록)
-  let xdTeamsGenerated = 0;
+  // 혼복 팀을 생성하되, 모든 선수가 골고루 참여하도록 라운드 로빈 방식 사용
   const actualMaxXDTeams = Math.min(maxXDTeamsToGenerate, maxPossibleXDTeams);
+  const xdTeams: Team[] = [];
 
-  for (const male of malePlayers) {
-    if (xdTeamsGenerated >= actualMaxXDTeams) break;
+  // 각 선수의 혼복 팀 참여 횟수 추적
+  const maleXDCount = new Map<string, number>();
+  const femaleXDCount = new Map<string, number>();
+  availableMales.forEach((p) => maleXDCount.set(p.id, 0));
+  availableFemales.forEach((p) => femaleXDCount.set(p.id, 0));
 
-    for (const female of femalePlayers) {
-      if (xdTeamsGenerated >= actualMaxXDTeams) break;
+  // 이미 생성된 팀 조합 추적 (중복 방지)
+  const createdPairs = new Set<string>();
 
-      // 고정 파트너로 이미 같은 조합이 있으면 스킵 (중복 방지)
-      const isFixedPair = fixedPartners.some(
-        (p) =>
-          ((p.player1Id === male.id && p.player2Id === female.id) ||
-            (p.player1Id === female.id && p.player2Id === male.id)) &&
-          p.type === "XD"
-      );
-      if (isFixedPair) {
-        console.log(`고정 파트너로 이미 존재: ${male.id} - ${female.id}`);
-        continue;
-      }
-
-      // 혼복 팀 생성
-      const xdTeam = {
-        id: generateTeamId(male.id, female.id),
-        player1Id: male.id,
-        player2Id: female.id,
-        type: "XD" as TeamType,
-      };
-      teams.push(xdTeam);
-      xdTeamsGenerated++;
-      console.log(
-        `혼복 팀 생성 (${xdTeamsGenerated}/${actualMaxXDTeams}): ${male.id} - ${female.id}`
-      );
+  // 고정 파트너 조합도 createdPairs에 추가
+  for (const pair of fixedPartners) {
+    if (pair.type === "XD") {
+      createdPairs.add(`${pair.player1Id}-${pair.player2Id}`);
+      createdPairs.add(`${pair.player2Id}-${pair.player1Id}`);
     }
   }
 
+  // 라운드 로빈 방식으로 혼복 팀 생성 (참여 횟수 적은 선수 우선)
+  while (xdTeams.length < actualMaxXDTeams) {
+    // 참여 횟수가 가장 적은 남자 선수 찾기
+    const sortedMales = [...availableMales].sort(
+      (a, b) => (maleXDCount.get(a.id) || 0) - (maleXDCount.get(b.id) || 0)
+    );
+
+    let teamCreated = false;
+
+    for (const male of sortedMales) {
+      if (teamCreated) break;
+
+      // 참여 횟수가 가장 적은 여자 선수 찾기
+      const sortedFemales = [...availableFemales].sort(
+        (a, b) =>
+          (femaleXDCount.get(a.id) || 0) - (femaleXDCount.get(b.id) || 0)
+      );
+
+      for (const female of sortedFemales) {
+        const pairKey = `${male.id}-${female.id}`;
+
+        // 이미 생성된 조합이면 스킵
+        if (createdPairs.has(pairKey)) continue;
+
+        // 혼복 팀 생성
+        const xdTeam = {
+          id: generateTeamId(male.id, female.id),
+          player1Id: male.id,
+          player2Id: female.id,
+          type: "XD" as TeamType,
+        };
+        xdTeams.push(xdTeam);
+        createdPairs.add(pairKey);
+        maleXDCount.set(male.id, (maleXDCount.get(male.id) || 0) + 1);
+        femaleXDCount.set(female.id, (femaleXDCount.get(female.id) || 0) + 1);
+
+        console.log(
+          `혼복 팀 생성 (${xdTeams.length}/${actualMaxXDTeams}): ${male.id} - ${
+            female.id
+          } (남:${maleXDCount.get(male.id)}, 여:${femaleXDCount.get(
+            female.id
+          )})`
+        );
+        teamCreated = true;
+        break;
+      }
+    }
+
+    // 더 이상 생성할 수 있는 팀이 없으면 종료
+    if (!teamCreated) {
+      console.log("더 이상 생성할 수 있는 혼복 팀이 없습니다.");
+      break;
+    }
+  }
+
+  // 생성된 혼복 팀을 teams에 추가
+  teams.push(...xdTeams);
+
   console.log("혼복 팀 생성 완료:", {
-    generated: xdTeamsGenerated,
+    generated: xdTeams.length,
     target: actualMaxXDTeams,
     targetGames: targetXDGames,
+    maleParticipation: Object.fromEntries(maleXDCount),
+    femaleParticipation: Object.fromEntries(femaleXDCount),
   });
 
   return teams;
@@ -279,6 +338,7 @@ export function scheduleMatches(
   const teamUsageCount: Record<string, number> = {};
   const matchHistory: Set<string> = new Set(); // 같은 매치 반복 방지
   let xdGamesCreated = 0; // 생성된 혼복 경기 수 추적
+  const xdParticipants = new Set<string>(); // 혼복에 참여한 선수 추적
 
   // 디버깅: schedule 단계에서 XD 팀 확인
   const xdTeams = teams.filter((t) => t.type === "XD");
@@ -290,6 +350,30 @@ export function scheduleMatches(
     "XD 팀 목록:",
     xdTeams.map((t) => t.id)
   );
+
+  // 모든 선수 목록 (혼복 참여 체크용)
+  const allPlayerIds = new Set(players.map((p) => p.id));
+  const totalPlayerCount = allPlayerIds.size;
+
+  // 혼복 분산 배치를 위한 위치 계산
+  // 예: 20경기, 4혼복 → 간격 5 → 경기 2, 7, 12, 17에 배치 (0-indexed: 2, 7, 12, 17)
+  const xdSlots = new Set<number>();
+  if (targetXDGames > 0) {
+    const interval = Math.floor(totalGames / targetXDGames);
+    const offset = Math.floor(interval / 2); // 중간부터 시작
+    for (let i = 0; i < targetXDGames; i++) {
+      const slot = offset + i * interval;
+      if (slot < totalGames) {
+        xdSlots.add(slot);
+      }
+    }
+    console.log(
+      "혼복 배치 위치:",
+      Array.from(xdSlots)
+        .map((s) => s + 1)
+        .join(", ") + " 경기"
+    );
+  }
 
   // 초기화
   players.forEach((p) => {
@@ -310,9 +394,9 @@ export function scheduleMatches(
       court < courts && round * courts + court < totalGames;
       court++
     ) {
-      // 현재 최대 게임 수 계산
+      // 현재 최소 게임 수 계산 (게임 수 차이 1 이내 유지용)
       const gameCounts = Object.values(playerGameCount);
-      const maxGames = gameCounts.length > 0 ? Math.max(...gameCounts) : 0;
+      const minGames = gameCounts.length > 0 ? Math.min(...gameCounts) : 0;
 
       // 현재 남은 경기 수와 XD 부족분 계산 (각 코트마다 재계산)
       const remainingGames = totalGames - matches.length;
@@ -328,12 +412,13 @@ export function scheduleMatches(
           return false;
         }
 
-        // 게임 수 균등성 체크: 최대 게임 수보다 1게임 이상 많은 선수가 포함된 팀은 제외
         const p1Count = playerGameCount[team.player1Id] || 0;
         const p2Count = playerGameCount[team.player2Id] || 0;
 
-        // 최대 게임 수와의 차이가 1을 넘지 않도록 제한
-        if (maxGames > 0 && (p1Count > maxGames || p2Count > maxGames)) {
+        // 게임 수 균등성 체크: 최소 게임 수 + 1보다 많은 게임 수를 가진 선수는 제외
+        // 이렇게 하면 최대-최소 차이가 항상 1 이내로 유지됨
+        const maxAllowed = minGames + 1;
+        if (p1Count > maxAllowed || p2Count > maxAllowed) {
           return false;
         }
 
@@ -413,9 +498,38 @@ export function scheduleMatches(
         gameCountDiff: number; // 두 팀 간 게임 수 차이
         scoreDiff: number; // 급수 점수 차이
         canFillNextCourt: boolean; // 이 매치 후 다음 코트 채울 수 있는지
+        xdNewParticipants: number; // 혼복 미참여자 수 (혼복 경기일 때만 유효)
+        isXD: boolean; // 혼복 경기인지
       }
 
       const allPossibleMatches: MatchCandidate[] = [];
+
+      // 현재 경기 인덱스 (0부터 시작)
+      const currentGameIndex = matches.length + roundMatches.length;
+
+      // 혼복 목표 달성 여부 및 현재 위치가 혼복 슬롯인지 확인
+      const xdGoalReached = xdGamesCreated >= targetXDGames;
+      const isXDSlot = xdSlots.has(currentGameIndex);
+
+      // 남은 경기와 혼복 부족분 계산 (혼복 슬롯 실패 시 폴백용)
+      const gamesLeft = totalGames - currentGameIndex;
+      const xdShortage = targetXDGames - xdGamesCreated;
+      // 혼복 슬롯이거나, 남은 경기가 혼복 부족분 이하면 혼복 허용
+      const shouldAllowXD =
+        isXDSlot || (!xdGoalReached && gamesLeft <= xdShortage);
+
+      // 디버깅: 현재 상태 로그
+      const xdCandidateCount = candidateTeams.filter(
+        (t) => t.type === "XD"
+      ).length;
+      if (shouldAllowXD) {
+        const reason = isXDSlot ? "혼복슬롯" : "폴백(부족분채우기)";
+        console.log(
+          `경기 ${
+            currentGameIndex + 1
+          }: 🎯${reason}!, 혼복후보팀=${xdCandidateCount}, 혼복생성=${xdGamesCreated}/${targetXDGames}`
+        );
+      }
 
       // 모든 가능한 매치 조합 생성
       for (let i = 0; i < candidateTeams.length; i++) {
@@ -425,6 +539,16 @@ export function scheduleMatches(
 
           // 같은 타입만 매칭 가능
           if (candidate.type !== opponent.type) continue;
+
+          // 혼복 배치 로직:
+          // - 혼복 슬롯이면 혼복 우선
+          // - 남은 경기가 혼복 부족분 이하면 혼복 허용 (폴백)
+          // - 혼복 목표 달성 후에는 항상 혼복 제외
+          if (candidate.type === "XD") {
+            if (xdGoalReached) continue; // 목표 달성 후 혼복 제외
+            if (!shouldAllowXD) continue; // 혼복 허용 조건 아니면 제외
+          }
+          // 비혼복은 항상 후보에 포함 (혼복 슬롯에서도 폴백으로 사용 가능)
 
           // 선수 겹침 체크
           if (
@@ -495,6 +619,21 @@ export function scheduleMatches(
           ).length;
           if (matchCount >= 2) continue; // 이미 2번 매칭된 조합은 제외
 
+          // 혼복 미참여자 수 계산 (혼복 경기일 때)
+          const isXD = candidate.type === "XD";
+          let xdNewParticipants = 0;
+          if (isXD) {
+            const matchPlayers = [
+              candidate.player1Id,
+              candidate.player2Id,
+              opponent.player1Id,
+              opponent.player2Id,
+            ];
+            xdNewParticipants = matchPlayers.filter(
+              (pid) => !xdParticipants.has(pid)
+            ).length;
+          }
+
           allPossibleMatches.push({
             teamA: candidate,
             teamB: opponent,
@@ -502,32 +641,56 @@ export function scheduleMatches(
             gameCountDiff,
             scoreDiff,
             canFillNextCourt,
+            xdNewParticipants,
+            isXD,
           });
         }
       }
 
+      // 디버깅: 혼복 허용 시 혼복 매치 수 확인
+      if (shouldAllowXD) {
+        const xdMatchCount = allPossibleMatches.filter((m) => m.isXD).length;
+        console.log(
+          `  → 혼복 매치 후보: ${xdMatchCount}개, 전체 매치 후보: ${allPossibleMatches.length}개`
+        );
+      }
+
       // 매치 정렬:
       // 1순위: 다음 코트 채울 수 있는지 (채울 수 있는 것 우선)
-      // 2순위: 평균 게임 수 (적은 순)
-      // 3순위: 점수 차이 (작은 순) - 점수 밸런스!
-      // 4순위: 게임 수 차이 (작은 순)
+      // 2순위: 혼복 슬롯이면 혼복 최우선 선택!
+      // 3순위: 평균 게임 수 (적은 순)
+      // 4순위: 혼복끼리 비교 시 미참여자가 많은 매치 우선 (다양한 참여 유도)
+      // 5순위: 점수 차이 (작은 순) - 점수 밸런스!
+      // 6순위: 게임 수 차이 (작은 순)
       allPossibleMatches.sort((a, b) => {
         // 1순위: 다음 코트 채울 수 있는 매치 우선
         if (a.canFillNextCourt !== b.canFillNextCourt) {
           return a.canFillNextCourt ? -1 : 1;
         }
 
-        // 2순위: 평균 게임 수 (게임 수가 적은 팀들의 매치 우선)
+        // 2순위: 혼복 허용 조건이면 혼복 최우선!
+        if (shouldAllowXD && !xdGoalReached && a.isXD !== b.isXD) {
+          return a.isXD ? -1 : 1;
+        }
+
+        // 3순위: 평균 게임 수 (게임 수가 적은 팀들의 매치 우선)
         if (a.avgGameCount !== b.avgGameCount) {
           return a.avgGameCount - b.avgGameCount;
         }
 
-        // 3순위: 점수 차이 (급수 밸런스 - 작을수록 좋음)
+        // 4순위: 혼복끼리 비교 시 미참여자가 많은 매치 우선 (다양한 참여 유도)
+        if (a.isXD && b.isXD) {
+          if (a.xdNewParticipants !== b.xdNewParticipants) {
+            return b.xdNewParticipants - a.xdNewParticipants; // 미참여자 많은 것 우선
+          }
+        }
+
+        // 5순위: 점수 차이 (급수 밸런스 - 작을수록 좋음)
         if (a.scoreDiff !== b.scoreDiff) {
           return a.scoreDiff - b.scoreDiff;
         }
 
-        // 4순위: 게임 수 차이
+        // 6순위: 게임 수 차이
         return a.gameCountDiff - b.gameCountDiff;
       });
 
@@ -581,9 +744,17 @@ export function scheduleMatches(
         ],
       };
 
-      // 혼복 경기 카운트
+      // 혼복 경기 카운트 및 참여자 추적
       if (teamA.type === "XD") {
         xdGamesCreated++;
+        // 혼복 참여자 추적
+        xdParticipants.add(teamA.player1Id);
+        xdParticipants.add(teamA.player2Id);
+        xdParticipants.add(teamB.player1Id);
+        xdParticipants.add(teamB.player2Id);
+        console.log(
+          `혼복 경기 생성 (${xdGamesCreated}/${targetXDGames}): 참여자 ${xdParticipants.size}/${totalPlayerCount}명`
+        );
       }
 
       roundMatches.push(match);
